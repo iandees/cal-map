@@ -4,7 +4,15 @@ import json
 import os
 import re
 import requests
+import sys
 from ics import Calendar, Event
+
+import logging
+logger = logging.getLogger('app')
+logger.setLevel(logging.DEBUG)
+ch = logging.StreamHandler(sys.stdout)
+ch.setLevel(logging.DEBUG)
+logger.addHandler(ch)
 
 def json_handler(obj):
     if isinstance(obj, arrow.Arrow):
@@ -60,7 +68,7 @@ def get_google_ical_events(url):
 
 def get_facebook_events(url):
     # The URL we get will probably be a Facebook web URL, so extract the event ID from it
-    match = re.match(r'.*facebook.com/events/(\d+)/?', url)
+    match = re.match(r'.*facebook.com/events/(\d+)/?.*', url)
     event_id = match.group(1)
 
     # You can use `app_id|app_secret` as the access_token
@@ -83,10 +91,15 @@ def get_facebook_events(url):
 
     properties = {
         'begin': arrow.get(event.get('start_time')),
-        'end': arrow.get(event.get('end_time')),
         'name': event.get('name'),
         'description': event.get('description'),
     }
+
+    if event.get('end_time'):
+        properties['end'] = arrow.get(event.get('end_time'))
+    else:
+        # If there's no end time, set end to begin?
+        properties['end'] = properties['begin']
 
     geometry = None
     if event.get('place'):
@@ -113,28 +126,45 @@ url_action_mapping = [
 ]
 
 def get_merged_events():
-    resp = requests.get(os.environ.get('CALENDARS_LIST_URL'))
-    resp.raise_for_status()
+    # resp = requests.get(os.environ.get('CALENDARS_LIST_URL'))
+    # resp.raise_for_status()
+    # urls = resp.text.splitlines()
+    urls = open('calendars.txt', 'r').read().splitlines()
+
+    now = arrow.utcnow()
 
     events = []
-    for url in resp.text.splitlines():
+    for url in urls:
+        this_url_events = None
         for regexp, fn in url_action_mapping:
             if regexp.match(url):
-                events.extend(fn(url))
+                url_processed = True
+                try:
+                    this_url_events = [
+                        e for e in fn(url) if e['properties']['end'] >= now
+                    ]
+                except:
+                    logger.exception("Problem occured while fetching events")
+
+                if this_url_events:
+                    events.extend(this_url_events)
+                    logger.info("Calendar %s added %s events", url, len(this_url_events))
+                else:
+                    logger.warn("Calendar %s had no events in the future", url)
+                break
+
+        if this_url_events is None:
+            logger.warn("Calendar %s could not be processed", url)
 
     return events
 
 def main():
-    now = arrow.utcnow()
     geo_features = []
 
     events = get_merged_events()
 
     # Filter out events that have already ended, sort by event begin time
-    events = sorted(
-        (e for e in events if e['properties']['end'] >= now),
-        key=lambda e: e['properties']['begin']
-    )
+    events = sorted(events, key=lambda e: e['properties']['begin'])
 
     feature_collection = {
         'type': "FeatureCollection",
