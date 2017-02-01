@@ -5,7 +5,7 @@ import os
 import re
 import requests
 import sys
-from ics import Calendar, Event
+from ics import Calendar
 
 import logging
 logger = logging.getLogger('app')
@@ -33,6 +33,9 @@ def request_geocode(addr_string):
     return resp.json()
 
 def get_first_geocode_entry(addr_string):
+    if not addr_string:
+        return None
+
     results = request_geocode(addr_string)
     features = results.get('features')
     return features[0] if features else None
@@ -122,6 +125,7 @@ def get_facebook_events(url):
 
 url_action_mapping = [
     (re.compile(r'^https://calendar.google.com/calendar/ical/.*'), get_google_ical_events),
+    (re.compile(r'^http://live-timely-.*.time.ly/\.*'), get_google_ical_events),
     (re.compile(r'^https://www.facebook.com/events/.*'), get_facebook_events),
 ]
 
@@ -138,7 +142,6 @@ def get_merged_events():
         this_url_events = None
         for regexp, fn in url_action_mapping:
             if regexp.match(url):
-                url_processed = True
                 try:
                     this_url_events = [
                         e for e in fn(url) if e['properties']['end'] >= now
@@ -159,8 +162,6 @@ def get_merged_events():
     return events
 
 def main():
-    geo_features = []
-
     events = get_merged_events()
 
     # Filter out events that have already ended, sort by event begin time
