@@ -105,14 +105,21 @@ def get_facebook_events(url):
         properties['end'] = properties['begin']
 
     geometry = None
-    if event.get('place'):
-        geometry = {
-            'type': "Point",
-            'coordinates': [
-                event.get('place').get('location').get('longitude'),
-                event.get('place').get('location').get('latitude'),
-            ]
-        }
+    place = event.get('place')
+    if place:
+        location = place.get('location')
+        if location:
+            geometry = {
+                'type': "Point",
+                'coordinates': [
+                    location.get('longitude'),
+                    location.get('latitude'),
+                ]
+            }
+        else:
+            best_geocode = get_first_geocode_entry(place.get('name'))
+            if best_geocode:
+                geometry = best_geocode['geometry']
 
     feature = {
         'type': "Feature",
