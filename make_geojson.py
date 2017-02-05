@@ -20,23 +20,31 @@ def json_handler(obj):
     else:
         return json.JSONEncoder().default(obj)
 
-def request_geocode(addr_string):
+def request_geocode(addr):
     api_key = os.environ.get('MAPZEN_API_KEY')
-    resp = requests.get(
-        'https://search.mapzen.com/v1/search',
-        params={
-            'text': addr_string,
-            'api_key': api_key,
-        }
-    )
+
+    if isinstance(addr, dict):
+        params = dict(api_key=api_key, **addr)
+        resp = requests.get(
+            'https://search.mapzen.com/v1/search/structured',
+            params=params,
+        )
+    else:
+        resp = requests.get(
+            'https://search.mapzen.com/v1/search',
+            params={
+                'text': addr,
+                'api_key': api_key,
+            }
+        )
     resp.raise_for_status()
     return resp.json()
 
-def get_first_geocode_entry(addr_string):
-    if not addr_string:
+def get_first_geocode_entry(addr):
+    if not addr:
         return None
 
-    results = request_geocode(addr_string)
+    results = request_geocode(addr)
     features = results.get('features')
     return features[0] if features else None
 
@@ -130,10 +138,71 @@ def get_facebook_events(url):
     # Caller expects a list of features
     return [feature]
 
+def get_townhall_events(url):
+    import csv
+
+    townhall_tz_mapping = {
+        'EST': 'UTC-05:00',
+        'CST': 'UTC-06:00',
+        'MST': 'UTC-07:00',
+        'PST': 'UTC-08:00',
+    }
+
+    resp = requests.get(url)
+    resp.raise_for_status()
+    body = resp.text.encode('utf-8')
+    lines = body.splitlines()
+    # Chop off the header rows
+    lines = lines[10:]
+    lines = csv.DictReader(lines)
+    features = []
+    for line in lines:
+        time_text = ' '.join(filter(None, [
+            line.get('Date'),
+            line.get('Time'),
+            townhall_tz_mapping.get(line.get('Time Zone')),
+        ]))
+        try:
+            time = arrow.get(time_text, 'dddd, MMMM D, YYYY H:mm A Z')
+        except Exception, e:
+            print "Failed to parse '{}': {}".format(time_text, e.message)
+            continue
+
+        properties = {
+            'begin': time,
+            'end': time,
+            'name': "{Member} {Meeting Type}".format(**line),
+            'description': "{Member} ({Party}) {Meeting Type} for {State} {District}".format(**line),
+        }
+
+        if not line.get('Street Address'):
+            continue
+
+        best_geocode = get_first_geocode_entry({
+            'address': line.get('Street Address'),
+            'locality': line.get('City'),
+            'region': line.get('State'),
+            'postalcode': line.get('Zip'),
+        })
+        if best_geocode:
+            geometry = best_geocode['geometry']
+        else:
+            geometry = None
+
+        feature = {
+            'type': "Feature",
+            'properties': properties,
+            'geometry': geometry
+        }
+        features.append(feature)
+
+    return features
+
 url_action_mapping = [
     (re.compile(r'^https://calendar.google.com/calendar/ical/.*'), get_google_ical_events),
     (re.compile(r'^http://live-timely-.*.time.ly/\.*'), get_google_ical_events),
     (re.compile(r'^https://www.facebook.com/events/.*'), get_facebook_events),
+    (re.compile(r'^https://docs.google.com/spreadsheet/ccc\?key=1yq1NT9DZ2z3B8ixhid894e77u9rN5XIgOwWtTW72IYA&output=csv$'), get_townhall_events),
 ]
 
 def get_merged_events():
